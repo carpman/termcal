@@ -7,17 +7,19 @@ import json
 import os
 import datetime
 import pytz
+import dateutil.parser
 
 def open_or_create_config():
 
     if not os.path.exists(os.path.expanduser('~/.termcal')):
         os.mkdir(os.path.expanduser('~/.termcal'))
     if not os.path.exists(os.path.expanduser('~/.termcal/config.json')):
-        default_options = {'local_timezone': '', 'default_calendar': '', 'calendars': [{'name': '', 'url': ''}]}
+        default_options = {'local_timezone': '', 'default_calendar': '', 'calendars': [{'name': '', 'url': '', 'default': 0}]}
         with open(os.path.expanduser('~/.termcal/config.json'), 'w') as new_config_file:
             new_config_file.write(json.dumps(default_options))
     with open(os.path.expanduser('~/.termcal/config.json'), 'r') as config_file:
         return json.loads(config_file.read())
+
 
 def getCalendarConfigByName(config, name):
     
@@ -26,7 +28,19 @@ def getCalendarConfigByName(config, name):
             return calConfig
     return None
 
+
+def getDefaultCalendarConfig(config):
+    
+    for calConfig in config['calendars']:
+        if calConfig['default'] == 1:
+            return calConfig
+    return None
+
+
 def getCalendar(config):
+
+    if not config:
+        return None
 
     try:
         client = caldav.DAVClient(config['url'])
@@ -41,15 +55,38 @@ def getCalendar(config):
         return calendars[0]
     except KeyError:
         print("Calendar %s not found" % name)
-        exit(1)
+        return None
+
+
+def getNewEventForCalendar(config, data):
+
+    if not config:
+        return None
+
+    try:
+        client = caldav.DAVClient(config['url'])
+        principal = caldav.Principal(client, config['url'])
+        calendars = principal.calendars()
+        if len(calendars) > 1:
+            print("Calendar URL error, URL points to multiple calendars.")
+            exit(1)
+        elif len(calendars) == 0:
+            print("Calendar could not be found at URL.")
+            exit(1)
+        newEvent = caldav.Event(client, data=data, parent=calendars[0])
+        return newEvent
+    except KeyError:
+        print("Calendar %s not found" % name)
+        return None
 
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Command line interface to CalDAV servers')
     parser.add_argument('-a', '--add', help='Add event to calendar', action='store_const', const=True)
-    parser.add_argument('--date')
-    parser.add_argument('--time')
+    parser.add_argument('-l', '--list', help='List calendars', action='store_const', const=True)
+    parser.add_argument('-c', '--calendar', help='Calendar to operate on', default=None)
+    parser.add_argument('-s', '--start', help='Event start time')
     parser.add_argument('--description')
 
     args = parser.parse_args()
@@ -61,14 +98,55 @@ if __name__ == '__main__':
 
     if args.add:
         #Sanity check arguments
-        if not args.date or not args.time or not args.description:
-            print("Date, time and description are required to add events to the calendar")
+        if not args.start or not args.description:
+            print("Starting date and time, and description are required to add events to the calendar.")
             exit(1)
+        
+        #Locate the calendar
+        calendarConfig = None
+        if args.calendar:
+            calendarConfig = getCalendarConfigByName(config, args.calendar)
+            if not calendarConfig:
+                print("Calendar %s not found." % args.calendar)
+                exit(1)
+        else:
+            calendarConfig = getDefaultCalendarConfig(config)
+            if not calendarConfig:
+                print("No default calendar found, please select a default calendar.")
+                exit(1)
+
+        #Try to parse the user's date time
+        startdt = dateutil.parser.parse(args.start)
+        if not startdt:
+            print("Sorry, could not parse the start date and time: %s" % args.start)
+            exit(1)
+        startdt = startdt.replace(tzinfo=localTimezone)
+
+        #Create an event and populate it
+        newEventCalendar = Calendar()
+        newEvent = Event()
+        newEvent.add('summary', args.description)
+        newEvent.add('dtstart', startdt)
+        newEventCalendar.add_component(newEvent)
+
+        #Get remote event to populate
+        newRemoteEvent = getNewEventForCalendar(calendarConfig, newEventCalendar.to_ical())
+        newRemoteEvent.save()
+
         exit(0)
+    elif args.list:
+        pass
     else:
         #Default behavior is to just display upcoming events
-        #TODO: Need to add a property to the calendar config to mark it as default, and have a function to find the default calendar from that
-        default = getCalendar(getCalendarConfigByName(config, 'Default'))
+        default = getCalendar(getDefaultCalendarConfig(config))
+        if not default:
+            print("No default calendar found, please select a default calendar.")
+            exit(1)
+
+        headerformatstr = "{:=^50}"
+        formatstr = "{date}\t{summary:<40}"
+
+        print(headerformatstr.format('Upcoming Events'))
         for remoteEvent in default.events():
             remoteEvent.load()
             calendar = Calendar.from_ical(remoteEvent.data)
@@ -78,8 +156,7 @@ if __name__ == '__main__':
             #TODO: Compare on the end of the event, not the start. If its the middle of an appointment (that I've missed) I want to see that. Maybe make it show red
             naiveDateStart = dateStart.astimezone(utcTimezone).replace(tzinfo=None)
             if naiveDateStart >= datetime.datetime.utcnow():
-                print dateStart
-                print event['summary']
+                print(formatstr.format(date=dateStart.strftime('%a %b %d @ %H:%M'), summary=event['summary']))
         exit(0)
 
 
