@@ -1,0 +1,89 @@
+#!/usr/bin/env python2.7
+
+import caldav
+from icalendar import Calendar, Event
+import argparse
+import json
+import os
+import datetime
+import pytz
+
+def open_or_create_config():
+
+    if not os.path.exists(os.path.expanduser('~/.termcal')):
+        os.mkdir(os.path.expanduser('~/.termcal'))
+    if not os.path.exists(os.path.expanduser('~/.termcal/config.json')):
+        default_options = {'local_timezone': '', 'default_calendar': '', 'calendars': [{'name': '', 'url': ''}]}
+        with open(os.path.expanduser('~/.termcal/config.json'), 'w') as new_config_file:
+            new_config_file.write(json.dumps(default_options))
+    with open(os.path.expanduser('~/.termcal/config.json'), 'r') as config_file:
+        return json.loads(config_file.read())
+
+def getCalendarConfigByName(config, name):
+    
+    for calConfig in config['calendars']:
+        if calConfig['name'] == name:
+            return calConfig
+    return None
+
+def getCalendar(config):
+
+    try:
+        client = caldav.DAVClient(config['url'])
+        principal = caldav.Principal(client, config['url'])
+        calendars = principal.calendars()
+        if len(calendars) > 1:
+            print("Calendar URL error, URL points to multiple calendars.")
+            exit(1)
+        elif len(calendars) == 0:
+            print("Calendar could not be found at URL.")
+            exit(1)
+        return calendars[0]
+    except KeyError:
+        print("Calendar %s not found" % name)
+        exit(1)
+
+
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser(description='Command line interface to CalDAV servers')
+    parser.add_argument('-a', '--add', help='Add event to calendar', action='store_const', const=True)
+    parser.add_argument('--date')
+    parser.add_argument('--time')
+    parser.add_argument('--description')
+
+    args = parser.parse_args()
+
+    config = open_or_create_config()
+    #TODO: Get this from the system, maybe?
+    localTimezone = pytz.timezone(config['local_timezone'])
+    utcTimezone = pytz.timezone('UTC')
+
+    if args.add:
+        #Sanity check arguments
+        if not args.date or not args.time or not args.description:
+            print("Date, time and description are required to add events to the calendar")
+            exit(1)
+        exit(0)
+    else:
+        #Default behavior is to just display upcoming events
+        #TODO: Need to add a property to the calendar config to mark it as default, and have a function to find the default calendar from that
+        default = getCalendar(getCalendarConfigByName(config, 'Default'))
+        for remoteEvent in default.events():
+            remoteEvent.load()
+            calendar = Calendar.from_ical(remoteEvent.data)
+            event = calendar.walk('vevent')[0]
+            dateStart = event.decoded('dtstart')
+            #This hateful hack converts the recieved start time to UTC so we can compare it, and forces it to be naive
+            #TODO: Compare on the end of the event, not the start. If its the middle of an appointment (that I've missed) I want to see that. Maybe make it show red
+            naiveDateStart = dateStart.astimezone(utcTimezone).replace(tzinfo=None)
+            if naiveDateStart >= datetime.datetime.utcnow():
+                print dateStart
+                print event['summary']
+        exit(0)
+
+
+
+
+
+
